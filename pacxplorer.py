@@ -252,13 +252,13 @@ class VtableAnalyzer(object):
 
     # Based on https://github.com/Synacktiv-contrib/kernelcache-laundering/blob/master/ios12_kernel_cache_helper.py
     @staticmethod
-    def get_pac(decorated_addr):
+    def get_pac(decorated_addr, pac_offset):
         """Return MOVK pac code from decorated pointer"""
         if decorated_addr & 0x4000000000000000 != 0:
             return None
         if decorated_addr & 0x8000000000000000 == 0:
             return None
-        return (decorated_addr >> 32) & 0xFFFF
+        return (decorated_addr >> pac_offset) & 0xFFFF
 
     @staticmethod
     def _patched_bytes_in_idb():
@@ -312,6 +312,7 @@ class VtableAnalyzer(object):
             <offset of this> --> another base class
             < etc >
             """
+            pac_offset = 34 if 'DYLD cache' in idaapi.get_file_type_name() else 32
 
             for ea, vtable_symbol in iteritems(self.vtable_eas):
 
@@ -344,7 +345,7 @@ class VtableAnalyzer(object):
                             break
 
                         # this is expected to always succeed
-                        pac = self.get_pac(orig_qword)
+                        pac = self.get_pac(orig_qword, pac_offset)
                         if pac is not None:
                             xref_to = idaapi.get_qword(ea + offset)
 
