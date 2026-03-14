@@ -312,7 +312,7 @@ class VtableAnalyzer(object):
             <offset of this> --> another base class
             < etc >
             """
-            pac_offset = 32 if 'kernelcache' in idaapi.get_file_type_name() else 34
+            pac_offset = 32 if 'kernelcache' in idaapi.get_file_type_name() else 36
 
             for ea, vtable_symbol in iteritems(self.vtable_eas):
 
