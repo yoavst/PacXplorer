@@ -15,20 +15,22 @@
 # along with this program. If not, see <http://www.gnu.org/licenses/>.
 
 from __future__ import print_function
+
 import json
 import mmap
-import idaapi
-import idc
-import idautils
-from netnode import Netnode
-from idaapi import Choose
-import ida_kernwin
-import ida_hexrays
-from collections import namedtuple
-from functools import wraps, partial
 import os
 import struct
 import sys
+from collections import namedtuple
+from functools import partial, wraps
+
+import ida_hexrays
+import ida_kernwin
+import idaapi
+import idautils
+import idc
+from idaapi import Choose
+from netnode import Netnode
 
 PYTHON3 = sys.version_info.major == 3
 if PYTHON3:
@@ -252,9 +254,9 @@ class VtableAnalyzer(object):
 
     # Based on https://github.com/Synacktiv-contrib/kernelcache-laundering/blob/master/ios12_kernel_cache_helper.py
     @staticmethod
-    def get_pac(decorated_addr, pac_offset):
+    def get_pac(decorated_addr, pac_offset, has_bind_bit=True):
         """Return MOVK pac code from decorated pointer"""
-        if decorated_addr & 0x4000000000000000 != 0:
+        if has_bind_bit and decorated_addr & 0x4000000000000000 != 0:
             return None
         if decorated_addr & 0x8000000000000000 == 0:
             return None
@@ -312,7 +314,14 @@ class VtableAnalyzer(object):
             <offset of this> --> another base class
             < etc >
             """
-            pac_offset = 32 if 'kernelcache' in idaapi.get_file_type_name() else 36
+            file_type = idaapi.get_file_type_name().lower()
+            if 'dyld' in file_type and 'cache' in file_type:
+                # DYLD_CHAINED_PTR_ARM64E_SHARED_CACHE: diversity at bits 34..49
+                pac_offset = 34
+            else:
+                # DYLD_CHAINED_PTR_ARM64E[_KERNEL]: diversity at bits 32..47
+                pac_offset = 32
+
 
             for ea, vtable_symbol in iteritems(self.vtable_eas):
 
@@ -345,7 +354,7 @@ class VtableAnalyzer(object):
                             break
 
                         # this is expected to always succeed
-                        pac = self.get_pac(orig_qword, pac_offset)
+                        pac = self.get_pac(orig_qword, pac_offset, has_bind_bit=pac_offset == 32)
                         if pac is not None:
                             xref_to = idaapi.get_qword(ea + offset)
 
