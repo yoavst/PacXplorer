@@ -207,6 +207,26 @@ class VtableAnalyzer(object):
 
     VTABLE_SUFFIX = '::vtable'
     SUFFIX_LEN = len(VTABLE_SUFFIX)
+    # IDA 9.5 kernelcache analysis names each vtable at its address point, i.e. at the first
+    # virtual method, and names secondary sub-vtables 'Class::vtable_<offset>'.
+    SECONDARY_VTABLE_INFIX = '::vtable_'
+    # ida_kernelcache names the whole table '__ZTV...', which starts with the Itanium ABI
+    # header (offset-to-top and RTTI pointer) that precedes the address point.
+    LEGACY_VTABLE_HEADER_SIZE = 16
+
+    @classmethod
+    def name_is_address_point(cls, name):
+        """Return True when a vtable symbol points at the vtable's address point."""
+        if name.endswith(cls.VTABLE_SUFFIX):
+            return True
+        _, _, offset = name.partition(cls.SECONDARY_VTABLE_INFIX)
+        # only accept the '<Class>::vtable_<hex offset>' form of secondary sub-vtables
+        return bool(offset) and all(c in '0123456789abcdefABCDEF' for c in offset)
+
+    @classmethod
+    def vtable_header_size(cls, name):
+        """Return the number of bytes between the vtable symbol and its first virtual method."""
+        return 0 if cls.name_is_address_point(name) else cls.LEGACY_VTABLE_HEADER_SIZE
 
     @PickleNetNode.cached('vtable_struct_sizes')
     def collect_all_vtable_struct_sizes(self):
@@ -223,7 +243,7 @@ class VtableAnalyzer(object):
         for name in names:
             yield name, idc.get_name_ea_simple(name)
 
-    @PickleNetNode.cached('vtable_eas2')
+    @PickleNetNode.cached('vtable_eas3')
     def collect_all_vtable_eas(self):
         """Generate a dictionary of <ea>:<symbol name> for all the vtables whose sizes we know"""
         vtables = {}
@@ -236,6 +256,8 @@ class VtableAnalyzer(object):
                     print("pacxplorer: warning, name %s, demangled %s, does not seem to be a vtable" %
                           (name, repr(demangled)))
                     continue
+                vtables[ea] = name
+            elif self.name_is_address_point(name):
                 vtables[ea] = name
 
         if DEBUG_VTABLE_SIZES:
@@ -273,7 +295,7 @@ class VtableAnalyzer(object):
         have_patches = bool(idaapi.visit_patched_bytes(0, idc.BADADDR, lambda *x: 1))
         return have_patches
 
-    @PickleNetNode.cached('vtable_pac_xrefs')
+    @PickleNetNode.cached('vtable_pac_xrefs2')
     def generate_pac_xrefs(self):
         """
         The main functionality of the vtable analysis module:
@@ -325,12 +347,14 @@ class VtableAnalyzer(object):
 
             for ea, vtable_symbol in iteritems(self.vtable_eas):
 
-                first_rtti_ptr = idaapi.get_qword(ea + 8)
+                header_size = self.vtable_header_size(vtable_symbol)
+                # a vtable named at its address point has no header, and never has concatenated sub-vtables
+                first_rtti_ptr = idaapi.get_qword(ea + 8) if header_size else 0
                 # first section of the vtable - main vtable.
                 # mostly, this is the only part there is.
                 # If there are concatenated vtables due to multiple inheritance, iterate over them.
                 while True:
-                    ea += 16  # skip 'this offset' and rtti in vtable
+                    ea += header_size  # skip 'this offset' and rtti in vtable
                     # offset in the current vtable
                     offset = 0
                     # now iterate over vmethods
@@ -359,7 +383,7 @@ class VtableAnalyzer(object):
                             xref_to = idaapi.get_qword(ea + offset)
 
                             # VtableXrefTuple = namedtuple('VtableXrefTuple', ['xref_to' , 'vtable_addr', 'vtable_entry_addr', 'offset', 'pac'])
-                            xref_tuple = VtableXrefTuple(xref_to, ea-16, ea + offset, offset, pac)
+                            xref_tuple = VtableXrefTuple(xref_to, ea - header_size, ea + offset, offset, pac)
                             refs = funcs_by_code_dict.setdefault((offset, pac), [])
                             refs.append(xref_tuple)
 
@@ -702,7 +726,12 @@ class MovkXrefChooser(_Choose):
         name = idc.get_name(ea, idc.GN_LONG)
         demangled = (idaapi.demangle_name(str(name), idc.get_inf_attr(idc.INF_SHORT_DEMNAMES)) or '').\
             replace("`vtable for'", "")
-        return demangled or name
+        demangled = demangled or name
+        # vtable symbols named by IDA 9.5 kernelcache analysis end with the vtable suffix;
+        # show the class they belong to
+        if demangled and VtableAnalyzer.name_is_address_point(demangled):
+            demangled = demangled.split(VtableAnalyzer.VTABLE_SUFFIX, 1)[0]
+        return demangled
 
 
 class FuncXrefChooser(_Choose):
@@ -927,9 +956,10 @@ class PacxplorerPlugin(idaapi.plugin_t, idaapi.UI_Hooks):
 
             self.vtable_analyzer.analyze()
             if len(self.vtable_analyzer.funcs_by_code_dict) == 0:
-                idaapi.warning(('%s\nUnable to find vtables and pac codes.\n' 
+                idaapi.warning(('%s\nUnable to find vtables and pac codes.\n'
                                'If this is a KernelCache:\n'
-                                'make sure ida_kernelcache is run on this idb') % self.wanted_name)
+                                'make sure the IDB has C++ vtable symbols'
+                                ' (IDA 9.5 kernelcache analysis, or ida_kernelcache)') % self.wanted_name)
                 return
 
             self.movk_analyzer.analyze()
